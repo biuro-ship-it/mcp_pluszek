@@ -48,7 +48,7 @@ mcp = FastMCP(
     ),
     stateless_http=True,
     host="0.0.0.0",
-    port=8000,
+    port=8765,
 )
 
 # ─── Infrastruktura: klient HTTP ─────────────────────────────────────────────
@@ -917,7 +917,7 @@ async def crm_lista_promocji(params: ListaPromocjiInput) -> str:
 # ─── Uruchomienie ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"CRM Pluszek MCP Server startuje na http://localhost:8000/mcp")
+    print(f"CRM Pluszek MCP Server startuje na http://localhost:8765/mcp")
     print(f"   CRM_API_URL      = {CRM_API_URL}")
     print(f"   CRM_BEARER_TOKEN = {'*' * min(len(CRM_BEARER_TOKEN), 8)}...")
     mcp.run(transport="streamable-http")
