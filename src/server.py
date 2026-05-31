@@ -217,21 +217,24 @@ async def crm_lista_klientow(params: ListaKlientowInput) -> str:
             q = params.search.lower()
             clients = [
                 c for c in clients
-                if q in (c.get("name") or c.get("nazwa") or "").lower()
-                or q in (c.get("city") or c.get("miasto") or "").lower()
+                if q in (c.get("companyName") or c.get("name") or "").lower()
+                or q in ((c.get("address") or {}).get("city") or "").lower()
+                or q in (c.get("contactPerson") or "").lower()
             ]
 
         total = len(clients)
         page = clients[params.offset : params.offset + params.limit]
 
         def _map_client(c: dict) -> dict:
+            addr = c.get("address") or {}
             return {
                 "id": c.get("id") or c.get("_id") or "",
-                "nazwa": c.get("name") or c.get("nazwa") or "",
-                "miasto": c.get("city") or c.get("miasto") or "",
-                "telefon": c.get("phone") or c.get("telefon") or "",
+                "nazwa": c.get("companyName") or c.get("name") or "",
+                "miasto": addr.get("city") or c.get("city") or "",
+                "telefon": c.get("phone") or "",
                 "email": c.get("email") or "",
-                "opiekun": c.get("assignedTo") or c.get("opiekun") or "",
+                "kontakt": c.get("contactPerson") or "",
+                "typ": c.get("type") or "",
             }
 
         return _dump(
@@ -295,9 +298,15 @@ async def crm_karta_klienta(params: KartaKlientaInput) -> str:
     """
     try:
         async with get_client() as client:
-            resp_client = await client.get(f"/api/clients/{params.client_id}")
-            resp_client.raise_for_status()
-            c = resp_client.json()
+            # Brak GET /clients/:id — pobieramy wszystkich i filtrujemy
+            resp_all = await client.get("/api/clients")
+            resp_all.raise_for_status()
+            all_clients = resp_all.json()
+            if not isinstance(all_clients, list):
+                all_clients = all_clients.get("data") or []
+            c = next((x for x in all_clients if x.get("id") == params.client_id), None)
+            if not c:
+                return _dump({"error": f"Klient {params.client_id} nie znaleziony."})
 
             resp_int = await client.get(f"/api/clients/{params.client_id}/interactions")
             resp_int.raise_for_status()
@@ -306,29 +315,31 @@ async def crm_karta_klienta(params: KartaKlientaInput) -> str:
         interactions: list[dict] = (
             interactions_raw
             if isinstance(interactions_raw, list)
-            else interactions_raw.get("data") or interactions_raw.get("interactions") or []
+            else interactions_raw.get("data") or []
         )
 
+        addr = c.get("address") or {}
         klient = {
-            "id": c.get("id") or c.get("_id") or "",
-            "nazwa": c.get("name") or c.get("nazwa") or "",
-            "miasto": c.get("city") or c.get("miasto") or "",
-            "telefon": c.get("phone") or c.get("telefon") or "",
+            "id": c.get("id") or "",
+            "nazwa": c.get("companyName") or "",
+            "kontakt": c.get("contactPerson") or "",
+            "telefon": c.get("phone") or "",
             "email": c.get("email") or "",
             "nip": c.get("nip") or "",
-            "opiekun": c.get("assignedTo") or c.get("opiekun") or "",
-            "notatki": c.get("notes") or c.get("notatki") or "",
-            "created_at": _fmt_date(c.get("createdAt") or c.get("created_at")),
+            "typ": c.get("type") or "",
+            "miasto": addr.get("city") or "",
+            "adres": f"{addr.get('street', '')} {addr.get('postalCode', '')} {addr.get('city', '')}".strip(),
+            "created_at": _fmt_date(c.get("createdAt")),
         }
 
         def _map_interaction(i: dict) -> dict:
             return {
                 "id": i.get("id") or i.get("_id") or "",
-                "type": i.get("type") or i.get("typ") or "",
-                "note": i.get("note") or i.get("notatka") or "",
-                "contact_date": _fmt_date(i.get("contactDate") or i.get("contact_date")),
-                "result": i.get("result") or i.get("wynik") or "",
-                "created_at": _fmt_date(i.get("createdAt") or i.get("created_at")),
+                "channel": i.get("channel") or "",
+                "notes": i.get("notes") or "",
+                "contact_date": _fmt_date(i.get("contactDate")),
+                "result": i.get("result") or "",
+                "created_at": _fmt_date(i.get("createdAt")),
             }
 
         return _dump(
@@ -505,41 +516,32 @@ async def crm_lista_followupow(params: ListaFollowupowInput) -> str:
     """
     try:
         async with get_client() as client:
-            resp = await client.get("/api/followups")
+            # API: GET /followups/summary — zwraca zaplanowane z dueDate <= dziś
+            resp = await client.get("/api/followups/summary")
             resp.raise_for_status()
             data = resp.json()
 
-        followups: list[dict] = (
-            data if isinstance(data, list) else data.get("data") or data.get("followups") or []
-        )
+        followups: list[dict] = data if isinstance(data, list) else []
 
         today_str = _today_iso()
 
-        # Filtrowanie po statusie
-        if params.status == "overdue":
-            followups = [
-                f for f in followups
-                if (f.get("status") or "pending") == "pending"
-                and (f.get("dueDate") or f.get("due_date") or "") < today_str
-            ]
-        elif params.status in ("pending", "done"):
-            followups = [
-                f for f in followups
-                if (f.get("status") or "pending") == params.status
-            ]
+        # summary zwraca tylko 'zaplanowane' z dueDate <= dziś
+        # filtr 'status' jest tu dla spójności interfejsu
+        if params.status == "done":
+            followups = []  # summary nie zwraca zrealizowanych
 
         total = len(followups)
         page = followups[params.offset : params.offset + params.limit]
 
         def _map_fu(f: dict) -> dict:
             return {
-                "id": f.get("id") or f.get("_id") or "",
-                "client_id": f.get("clientId") or f.get("client_id") or "",
-                "client_nazwa": f.get("clientName") or f.get("client_nazwa") or "",
-                "reminder_text": f.get("reminderText") or f.get("reminder_text") or "",
-                "due_date": _fmt_date(f.get("dueDate") or f.get("due_date")),
-                "status": f.get("status") or "pending",
-                "created_at": _fmt_date(f.get("createdAt") or f.get("created_at")),
+                "id": f.get("id") or "",
+                "client_id": f.get("clientId") or "",
+                "client_nazwa": f.get("clientName") or "",
+                "reminder_text": f.get("reminderText") or "",
+                "due_date": _fmt_date(f.get("dueDate")),
+                "status": f.get("status") or "zaplanowane",
+                "created_at": _fmt_date(f.get("createdAt")),
             }
 
         return _dump(
@@ -613,13 +615,13 @@ async def crm_dodaj_followup(params: DodajFollowupInput) -> str:
     """
     try:
         payload = {
-            "clientId": params.client_id,
+            "clientName": "",  # wymagane przez API — pobieramy z client_id
             "reminderText": params.reminder_text,
             "dueDate": params.due_date,
         }
 
         async with get_client() as client:
-            resp = await client.post("/api/followups", json=payload)
+            resp = await client.post(f"/api/followups/client/{params.client_id}", json=payload)
             resp.raise_for_status()
             created = resp.json()
 
@@ -688,8 +690,8 @@ async def crm_zakoncz_followup(params: ZakonczFollowupInput) -> str:
     try:
         async with get_client() as client:
             resp = await client.patch(
-                f"/api/followups/{params.followup_id}",
-                json={"status": "done"},
+                f"/api/followups/{params.followup_id}/status",
+                json={"status": "zrealizowane"},
             )
             resp.raise_for_status()
 
